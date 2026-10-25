@@ -11,15 +11,16 @@ import os
 import hydra
 import mlflow
 import numpy as np
-from typing import Any, Tuple
+from typing import Any, Dict, Optional, Tuple
 from tensorflow import keras
 from config_dir.configType import KWSConfig
 from src import data
-from src.exception_handler import NotFoundError, DirectoryError, ValueError
+from src.exception_handler import NotFoundError, ValueError
 
 class KeywordSpotter:
     def __init__(self, audio_file: str, model_artifactory_dir: str,
-                n_mfcc: int, mfcc_length: int, sampling_rate: int) -> None:
+                n_mfcc: int, mfcc_length: int, sampling_rate: int,
+                display_labels: Optional[Dict[str, str]] = None) -> None:
         """
         Parameters
         ----------
@@ -39,6 +40,7 @@ class KeywordSpotter:
         self.n_mfcc = n_mfcc
         self.mfcc_length = mfcc_length
         self.sampling_rate = sampling_rate
+        self.display_labels = display_labels or {}
 
     def predict(self) -> Tuple[str, float]:
         """
@@ -67,16 +69,14 @@ class KeywordSpotter:
         """
 
         try:
-            if not os.path.exists(self.model_artifactory_dir):
-                raise DirectoryError(
-                       f"{self.model_artifactory_dir} doesn't exists. Please enter a valid path !!!"
-                        )
-
             normalized_model_path = os.path.abspath(self.model_artifactory_dir)
-            if os.path.exists(normalized_model_path) and os.path.isdir(normalized_model_path):
-                model: Any = keras.models.load_model(normalized_model_path)
-            else:
-                raise NotFoundError(f"Model directory not found: {normalized_model_path}")
+            saved_model_file = os.path.join(normalized_model_path, "saved_model.pb")
+            if not os.path.isfile(saved_model_file):
+                raise NotFoundError(
+                    f"TensorFlow SavedModel file not found: {saved_model_file}"
+                )
+
+            model: Any = keras.models.load_model(normalized_model_path)
 
             audio_mfcc: np.ndarray = data.convert_audio_to_mfcc(self.audio_file,
                                                     self.n_mfcc,
@@ -85,7 +85,8 @@ class KeywordSpotter:
             reshaped_audio_mfcc: np.ndarray = audio_mfcc.reshape(1, self.n_mfcc, self.mfcc_length)
             labels = data.Preprocess().wrap_labels()
             model_output = model.predict(reshaped_audio_mfcc, verbose=0)
-            predicted_keyword: str = labels[np.argmax(model_output)]
+            predicted_label: str = labels[np.argmax(model_output)]
+            predicted_keyword = self.display_labels.get(predicted_label, predicted_label)
             label_probability: float = float(np.max(model_output))
 
             if predicted_keyword is None or label_probability is None:
@@ -101,7 +102,8 @@ def main(cfg: KWSConfig) -> None:
     inference_ = KeywordSpotter(cfg.names.audio_file,
                                 cfg.paths.model_artifactory_dir,
                                 cfg.params.n_mfcc, 
-                                cfg.params.mfcc_length, cfg.params.sampling_rate)
+                                cfg.params.mfcc_length, cfg.params.sampling_rate,
+                                dict(cfg.get("display_labels", {})))
     predicted_keyword, label_probability = inference_.predict()
     print(f"Predicted keyword: {predicted_keyword} \n Keyword probability: {label_probability}")
 

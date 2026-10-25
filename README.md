@@ -148,26 +148,9 @@ The project is a concoction of `research` (audio signal processing, keyword spot
 [Keyword Spotting](https://arxiv.org/ftp/arxiv/papers/1703/1703.05390.pdf) (KWS) is the task of detecting a particular keyword from speech. Current voice-based devices such as **Amazon Alexa**, **Google Home** etc. first detect the predefined keywords (wakewords) from the speech locally on the device. When such keywords are detected, a full scale automatic speech recognizer is triggered on the cloud for further recognition of entire speech and processing. Traditional approaches for KWS are based on Hidden
 Markov Models with sequence search algorithms. The advancements in deep learning and increased data availability replaced them with deep learning based approaches as state-of-the-art.
 
-### Dependency Management - Poetry
+### Dependency Management
 
-[Poetry](https://python-poetry.org/docs/) is a tool for dependency management and packaging in Python. It facilitates to declare the libraries in which the project is dependent on and  manages (install/update) them efficiently without much hassles. In short, it is an all-in-one tool to manage Python packages. It allows to seperate the global dependencies and dev-dependencies without cluttering.
-
-[pyproject.toml](./pyproject.toml) holds all the information necessary to manage the packages. All the global dependencies are defined in `[tool.poetry.dependencies]` and dev-dependencies like **pytest, flake8** in `[tool.poetry.dev-dependencies]` which makes it easier to be used for development and production. [poetry.lock](./poetry.lock) facilitates to use the exact same versions of the dependencies.
-
-#### Pro-Tip to install dependencies using poetry
-
-**When the project needs multiple packages,**
-  1. One way is, to install ony by one manually using:
-  ```
-  poetry add
-  ```   
-  2. But, it is very tedious and manual process to do that way. So, to install multiple dependencies from `requirements.txt` (conventional way), use the following command:
-  ```
-  $cat requirements.txt | xargs poetry add
-
-  ```
-**_Note:_**  
-_In the repo, `requirements.txt` is not added. If needed, please define all your packages in it and run the command above. Finally, poetry will install all your packages from requirements file._
+The pinned dependencies used by local setup, CI, and Docker builds are listed in [`requirements.txt`](./requirements.txt). Use that file to create the runtime and test environments described below. The Poetry metadata in `pyproject.toml` and `poetry.lock` is legacy and is not the dependency source used by these setup instructions.
 
 ### Configuration Management
 
@@ -271,18 +254,31 @@ Navigate to the project directory
 ```bash
   cd <cloned_repository_name>
 ```
-Create a Python 3.11 virtual environment and install the pinned dependencies:
+Create a Python 3.11 virtual environment and install the pinned dependencies. On Windows, keep the environment outside a deeply nested repository path (for example, in OneDrive) to avoid Windows path-length errors during package installation.
+
+```powershell
+$envPath = Join-Path $env:LOCALAPPDATA "venvs\kws-spotter"
+New-Item -ItemType Directory -Force (Split-Path $envPath) | Out-Null
+py -3.11 -m venv $envPath
+$python = Join-Path $envPath "Scripts\python.exe"
+& $python -m pip install --upgrade pip
+& $python -m pip install -r requirements.txt
+```
+
+On Linux/macOS:
 
 ```bash
-  python -m venv .venv
-  # Windows PowerShell: .\.venv\Scripts\Activate.ps1
-  # Linux/macOS: source .venv/bin/activate
-  python -m pip install -r requirements.txt
+python3.11 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
 ```
 
 Ensure the `.npy` feature files and matching `labels.txt` are present in `dataset/train/`. Train the model and log the run with MLflow:
 
 ```bash
+  # Windows PowerShell: & $python -m src.main
+  # Linux/macOS:
   python -m src.main
 ```
 
@@ -295,16 +291,25 @@ Run inference locally:
 Run tests:
 
 ```bash
+  # Windows PowerShell: & $python -m pytest -q
+  # Linux/macOS:
   python -m pytest -q
 ```
 
 Run the Flask application:
 
 ```bash
+  # Windows PowerShell: $env:PORT = "5001" if port 5000 is already in use; then run:
+  # & $python app.py
+  # Linux/macOS:
   python app.py
 ```
 
-The Flask application listens on port 5000. Check `http://127.0.0.1:5000/health`. Use audio files from this [test directory](./dataset/test/) for inference or download the full test set from [here](https://www.kaggle.com/competitions/tensorflow-speech-recognition-challenge/data).
+The Flask application listens on port 5000 by default. If that port is already in use, set `PORT` to another port (for example, `5001`) before starting the app. Check `http://127.0.0.1:<port>/health`. Use audio files from this [test directory](./dataset/test/) for inference or download the full test set from [here](https://www.kaggle.com/competitions/tensorflow-speech-recognition-challenge/data).
+
+The web app uses Faster-Whisper to transcribe spoken English from WAV files and displays the full transcript below the upload button. The first transcription downloads the `base.en` model; subsequent transcriptions use the local cached model, and uploaded audio is processed on your computer. A network connection is needed only for the initial model download. Uploads are limited to 64 MB.
+
+The TensorFlow keyword-classification model remains available for the training and command-line inference workflow; it is separate from the web app's speech-to-text transcription.
 
 _**Note:** Assign necessary parameter variables and path in the [config.yaml](./config_dir/config.yaml). If it throws any error, please ensure that valid `PATH_NAMES` and `parameter` values are used._ 
 

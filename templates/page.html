@@ -1,37 +1,36 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-    <title>Keyword Spotter - MLOps Demo</title>
+    <title>Speech Transcriber</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='page.css') }}">
 </head>
 
 <body>
     <div class="banner">
         <div class="content">
-            <h1>Keyword Spotter</h1>
-            <p>Try out the deployed keyword spotting model trained on audio data. <br> Currently,
-                the model recognizes only short one second audio. </p>
+            <h1>Speech Transcriber</h1>
+            <p>Upload a WAV recording and get its spoken English words as text. <br>
+                Your audio is processed locally. The speech model downloads once on first use.</p>
             <h2>Upload .wav audio file</h2>
                 <br>
             {% with messages = get_flashed_messages() %}
                 {% if messages %}
                     {% for message in messages %}
-                        {{message}}
+                        <p class="message" role="alert">{{ message }}</p>
                     {% endfor %}
                 {% endif %}
             {% endwith %}
                         
             <form action="{{ url_for('transcribe')}}" method="post" enctype="multipart/form-data">
-                <input type="file" id = "fileinput" name="file"/>
+                <input type="file" id="fileinput" name="file" accept=".wav,audio/wav" required/>
                 <br>
                 <input type="submit" id="submitButton"  value="Transcribe"/>
             </form>
                    
-            {% if recognized_keyword %}
-                <div id="ResultContainer">
-                    <h3 id="Transcription">{{recognized_keyword}}</h3>
-                    <br>
-                    <h3 id="probability">{{label_probability}}</h3>
+            {% if transcription %}
+                <div id="ResultContainer" aria-live="polite">
+                    <h2 id="transcription-heading">Transcription</h2>
+                    <p id="transcription">{{ transcription }}</p>
                 </div>
             {% endif %}
 

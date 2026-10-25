@@ -11,6 +11,7 @@ import pytest
 import numpy as np
 from omegaconf import OmegaConf
 from src import data
+from src.inference import KeywordSpotter
 warnings.filterwarnings('ignore')
 
 cfg = OmegaConf.load('./config_dir/config.yaml')
@@ -98,3 +99,33 @@ def test_preprocessed_data_matches_model_input_shape() -> None:
     assert dataset.x_test.shape[1:] == (cfg.params.n_mfcc, cfg.params.mfcc_length)
     assert dataset.y_train.shape[0] == dataset.x_train.shape[0]
     assert dataset.y_test.shape[0] == dataset.x_test.shape[0]
+
+def test_keyword_spotter_maps_class_to_spoken_word(monkeypatch) -> None:
+    class FakeModel:
+        def predict(self, features, verbose=0):
+            return np.array([[0.1, 0.1, 0.8, 0, 0, 0]])
+
+    monkeypatch.setattr("src.inference.os.path.isfile", lambda path: True)
+    monkeypatch.setattr(
+        "src.inference.keras.models.load_model",
+        lambda path: FakeModel(),
+    )
+    monkeypatch.setattr(
+        "src.inference.data.convert_audio_to_mfcc",
+        lambda *args: np.zeros((49, 40)),
+    )
+    monkeypatch.setattr(
+        "src.inference.data.Preprocess.wrap_labels",
+        lambda self: ["audio_5", "audio1", "audio2", "audio3", "audio4", "audio6"],
+    )
+
+    spotter = KeywordSpotter(
+        "sample.wav",
+        "model",
+        49,
+        40,
+        16000,
+        display_labels={"audio2": "stop"},
+    )
+
+    assert spotter.predict() == ("stop", 0.8)

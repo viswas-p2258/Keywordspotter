@@ -14,18 +14,13 @@ Note:
 """
 
 import os
-from flask import Flask, render_template, request, flash, abort
-from omegaconf import OmegaConf
-from src import data
-from src.inference import KeywordSpotter
-from src.exception_handler import NotFoundError
+import tempfile
+from flask import Flask, render_template, request, flash
+from src.transcription import TranscriptionError, transcribe_audio
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
-app.config["MAX_CONTENT_LENGTH"] = 16 * 1024 * 1024
-cfg = OmegaConf.load(os.path.join(os.path.dirname(__file__), 'config_dir', 'config.yaml'))
-
-os.makedirs(os.path.join(os.path.dirname(__file__), 'artifacts'), exist_ok=True)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024 * 1024
 
 @app.route('/')
 def home():
@@ -39,48 +34,43 @@ def health():
     """Simple health check endpoint for load balancers and deployment checks."""
     return {"status": "ok"}, 200
 
+
+@app.errorhandler(413)
+def request_too_large(error):
+    app.logger.warning("Rejected oversized audio upload: %s", error)
+    flash("Audio file is too large. Please choose a WAV file smaller than 64 MB.", category="error")
+    return render_template("page.html"), 413
+
+
 @app.route("/transcribe", methods = ["POST"])
 def transcribe():
-    """
-    Returns the prediction from trained model artifact whenever transcribe route is called.
-    It accepts file input (.wav) whenever user uploads the file, and make prediction using it.
-    The `app.route()` decorator does the job of event handling by means of `jinja2` template
-    engine.
+    """Transcribe the uploaded WAV file and show its recognized words."""
+    audio_file = request.files.get("file")
+    if audio_file is None or not audio_file.filename:
+        flash("Please choose a WAV audio file.", category="error")
+        return render_template("page.html")
 
-    Raises
-    ------
-    NotFoundError: Exception
-        404 error, if any exception occurs.
-    """
+    if not audio_file.filename.lower().endswith(".wav"):
+        flash("Unsupported file format. Please upload a .wav file.", category="error")
+        return render_template("page.html")
 
-    recognized_keyword = ""
-    if request.method == "POST":
-        audio_file = request.files.get("file")
-        if audio_file is None or not audio_file.filename:
-            flash("File not found !!!", category="error")
-            return render_template("page.html")
-       
-        elif not data.check_fileType(filename=audio_file.filename, extension=".wav"):
-            flash("Unsupported file format. Please use only .wav files", category="error")
-            return render_template("page.html")
+    temporary_path = None
+    try:
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temporary_file:
+            temporary_path = temporary_file.name
+            audio_file.save(temporary_file)
 
-        else:
-            try:
-                recognizer = KeywordSpotter(audio_file,
-                                            cfg.paths.model_artifactory_dir,
-                                            cfg.params.n_mfcc,
-                                            cfg.params.mfcc_length,
-                                            cfg.params.sampling_rate)
-                recognized_keyword, label_probability = recognizer.predict()
-
-            except NotFoundError:
-                abort(404, description = "Sorry, something went wrong. Cannot predict from the model. Please try again !!!")
-
-    return render_template(
-                "page.html",
-                 recognized_keyword = f"Transcribed keyword: {recognized_keyword.title()}",
-                 label_probability = f"Predicted probability: {label_probability}"
-                 )
+        transcription = transcribe_audio(temporary_path)
+        if not transcription:
+            transcription = "No speech was detected in this audio."
+        return render_template("page.html", transcription=transcription)
+    except TranscriptionError as exc:
+        app.logger.warning("Audio transcription failed: %s", exc)
+        flash(str(exc), category="error")
+        return render_template("page.html")
+    finally:
+        if temporary_path and os.path.exists(temporary_path):
+            os.remove(temporary_path)
 
 if __name__ == "__main__":
     app.run(

@@ -20,3 +20,6 @@ names:
   experiment_name: ASR_Exp
   audio_file: dataset/test/audio1.wav
   metric_name: val_accuracy
+
+display_labels:
+  audio2: stop
