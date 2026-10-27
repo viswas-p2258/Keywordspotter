@@ -236,13 +236,38 @@ On Lambda, the browser sends WAV files directly to private S3 and the app starts
 
 Before deploying, configure the `KWS-GitHub-Deploy` IAM role in AWS:
 
-- Its trust policy must allow GitHub's OIDC provider (`token.actions.githubusercontent.com`) to assume the role for this repository and its `main` branch.
+- The AWS account must have the GitHub OIDC identity provider `token.actions.githubusercontent.com` (audience `sts.amazonaws.com`). Set the role's trust relationship to allow this repository's `main` branch, for example:
+
+  ```json
+  {
+    "Version": "2012-10-17",
+    "Statement": [
+      {
+        "Effect": "Allow",
+        "Principal": {
+          "Federated": "arn:aws:iam::696073197777:oidc-provider/token.actions.githubusercontent.com"
+        },
+        "Action": "sts:AssumeRoleWithWebIdentity",
+        "Condition": {
+          "StringEquals": {
+            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+            "token.actions.githubusercontent.com:sub": "repo:viswas-p2258/Keywordspotter:ref:refs/heads/main"
+          }
+        }
+      }
+    ]
+  }
+  ```
+
+- Its permissions must allow GitHub Actions to assume the role and then perform the deployment operations below.
 - Its permissions must allow ECR repository creation and image push; CloudFormation change-set and stack create/update/describe operations; Lambda function, Function URL, and permission management; S3 bucket setup; and IAM role creation, policy attachment, and `iam:PassRole` for the Lambda execution role created by the stack. Scope these permissions to this repository's stack, ECR repository, and `ap-south-1` where possible.
 - The role ARN is currently set in `.github/workflows/deploy.yml`; change `AWS_ROLE_TO_ASSUME` if your AWS account uses a different role.
 
 Push to `main` or run the workflow manually from GitHub Actions. A successful deployment prints the public app URL. The Function URL is unauthenticated and can be invoked by anyone; monitor Lambda/S3 usage and AWS costs. Lambda concurrency is capped at five executions. Audio is limited to 64 MB and uploaded directly to S3 using a short-lived presigned URL to avoid Lambda's request-size limit. The Lambda function has a 15-minute timeout, and the initial speech-model download may make its first transcription slower.
 
 This workflow no longer updates EC2. It does not stop or delete any EC2 instance previously used for deployment; decommission existing instances separately if they are no longer needed.
+
+The GitHub-hosted runner builds the container, so Docker Desktop is not needed on a developer's computer to deploy. To build and run the container locally on Windows, install and start Docker Desktop and enable its WSL 2 backend.
 
 ## Run locally
 

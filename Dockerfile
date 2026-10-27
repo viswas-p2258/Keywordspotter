@@ -1,4 +1,4 @@
-FROM public.ecr.aws/awslambda-web-adapter:0.9.1 AS lambda-adapter
+FROM public.ecr.aws/awsguru/aws-lambda-adapter:0.9.1 AS lambda-adapter
 
 FROM python:3.11-slim
 
