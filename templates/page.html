@@ -10,7 +10,16 @@
         <div class="content">
             <h1>Speech Transcriber</h1>
             <p>Upload a WAV recording and get its spoken English words as text. <br>
-                Your audio is processed locally. The speech model downloads once on first use.</p>
+                {% if s3_uploads_enabled %}
+                    {% if amazon_transcribe_enabled %}
+                        Your audio is temporarily stored in private cloud storage and transcribed by Amazon Transcribe.
+                    {% else %}
+                        Your audio is temporarily stored in private cloud storage for processing.
+                    {% endif %}
+                {% else %}
+                    Your audio is processed locally. The speech model downloads once on first use.
+                {% endif %}
+            </p>
             <h2>Upload .wav audio file</h2>
                 <br>
             {% with messages = get_flashed_messages() %}
@@ -21,21 +30,99 @@
                 {% endif %}
             {% endwith %}
                         
-            <form action="{{ url_for('transcribe')}}" method="post" enctype="multipart/form-data">
+            <form id="transcribeForm" action="{{ url_for('transcribe')}}" method="post" enctype="multipart/form-data"
+                  data-s3-upload="{{ 'true' if s3_uploads_enabled else 'false' }}"
+                  data-amazon-transcribe="{{ 'true' if amazon_transcribe_enabled else 'false' }}"
+                  data-max-upload-bytes="{{ max_upload_bytes }}">
                 <input type="file" id="fileinput" name="file" accept=".wav,audio/wav" required/>
                 <br>
                 <input type="submit" id="submitButton"  value="Transcribe"/>
             </form>
-                   
-            {% if transcription %}
-                <div id="ResultContainer" aria-live="polite">
-                    <h2 id="transcription-heading">Transcription</h2>
-                    <p id="transcription">{{ transcription }}</p>
-                </div>
-            {% endif %}
+            <p id="uploadStatus" role="status" aria-live="polite"></p>
+            <div id="ResultContainer" aria-live="polite" {% if not transcription %}hidden{% endif %}>
+                <h2 id="transcription-heading">Transcription</h2>
+                <p id="transcription">{{ transcription or '' }}</p>
+            </div>
 
         </div>
     </div>
+    <script>
+        const form = document.getElementById("transcribeForm");
+        if (form.dataset.s3Upload === "true") {
+            form.addEventListener("submit", async (event) => {
+                event.preventDefault();
+                const file = document.getElementById("fileinput").files[0];
+                const status = document.getElementById("uploadStatus");
+                const result = document.getElementById("ResultContainer");
+                const submitButton = document.getElementById("submitButton");
+                if (!file || file.size > Number(form.dataset.maxUploadBytes)) {
+                    status.textContent = file
+                        ? "Audio file exceeds the maximum upload size."
+                        : "Please choose a WAV audio file.";
+                    return;
+                }
 
+                submitButton.disabled = true;
+                result.hidden = true;
+                status.textContent = "Uploading audio...";
+                try {
+                    const presignResponse = await fetch("{{ url_for('presign_upload') }}", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ filename: file.name, size: file.size })
+                    });
+                    const upload = await presignResponse.json();
+                    if (!presignResponse.ok) throw new Error(upload.error || "Could not prepare the upload.");
+
+                    const uploadForm = new FormData();
+                    Object.entries(upload.upload_fields).forEach(([name, value]) => {
+                        uploadForm.append(name, value);
+                    });
+                    uploadForm.append("file", file);
+                    const uploadResponse = await fetch(upload.upload_url, {
+                        method: "POST",
+                        body: uploadForm
+                    });
+                    if (!uploadResponse.ok) throw new Error("Could not upload the audio file.");
+
+                    status.textContent = "Submitting audio for transcription...";
+                    const transcriptionResponse = await fetch("{{ url_for('transcribe') }}", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ object_key: upload.object_key })
+                    });
+                    let response = await transcriptionResponse.json();
+                    if (!transcriptionResponse.ok) throw new Error(response.error || "Transcription failed.");
+                    if (transcriptionResponse.status === 202) {
+                        const jobId = response.job_id;
+                        if (!jobId || form.dataset.amazonTranscribe !== "true") {
+                            throw new Error("The transcription service returned an invalid job reference.");
+                        }
+                        for (let attempt = 0; attempt < 180; attempt += 1) {
+                            await new Promise(resolve => setTimeout(resolve, 5000));
+                            status.textContent = "Amazon Transcribe is processing your audio...";
+                            const statusResponse = await fetch(
+                                `{{ url_for('transcribe_status', job_id='JOB_ID') }}`.replace("JOB_ID", encodeURIComponent(jobId))
+                            );
+                            response = await statusResponse.json();
+                            if (statusResponse.status === 202) continue;
+                            if (!statusResponse.ok) throw new Error(response.error || "Transcription failed.");
+                            break;
+                        }
+                        if (response.status !== "COMPLETED") {
+                            throw new Error("Transcription is taking longer than expected. Please try again later.");
+                        }
+                    }
+                    document.getElementById("transcription").textContent = response.transcription;
+                    result.hidden = false;
+                    status.textContent = "";
+                } catch (error) {
+                    status.textContent = error.message || "The audio could not be processed.";
+                } finally {
+                    submitButton.disabled = false;
+                }
+            });
+        }
+    </script>
 </body>
 </html>

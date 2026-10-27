@@ -1,4 +1,4 @@
-name: Deploy to AWS
+name: Deploy to AWS Lambda
 
 on:
   push:
@@ -14,7 +14,7 @@ env:
   ECR_REPOSITORY: keyword-spotting-app
   IMAGE_TAG: ${{ github.sha }}
   AWS_ROLE_TO_ASSUME: arn:aws:iam::696073197777:role/KWS-GitHub-Deploy
-  EC2_NAME: keyword-spotting-app
+  STACK_NAME: keyword-spotting-app
 
 jobs:
   build-test-and-deploy:
@@ -66,7 +66,7 @@ jobs:
         id: login-ecr
         uses: aws-actions/amazon-ecr-login@v2
 
-      - name: Build Docker image
+      - name: Build Lambda container image
         run: |
           docker build \
             --tag "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}" \
@@ -78,123 +78,31 @@ jobs:
           docker push "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
           docker push "${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:latest"
 
-      - name: Deploy to EC2 and verify health
-        env:
-          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+      - name: Deploy Lambda stack
         run: |
           set -euo pipefail
-          mapfile -t instance_ids < <(
-            aws ec2 describe-instances \
-              --filters \
-                "Name=tag:Name,Values=${EC2_NAME}" \
-                "Name=tag:Project,Values=keyword-spotter" \
-                "Name=instance-state-name,Values=running" \
-              --query 'Reservations[].Instances[].InstanceId' \
-              --output text | tr '\t' '\n'
-          )
-          if [[ "${#instance_ids[@]}" -ne 1 || -z "${instance_ids[0]}" ]]; then
-            echo "::error::Expected exactly one running EC2 instance tagged ${EC2_NAME}; found ${#instance_ids[@]}."
-            exit 1
-          fi
-          instance_id="${instance_ids[0]}"
-
-          ssm_status=""
-          for attempt in $(seq 1 60); do
-            ssm_status=$(aws ssm describe-instance-information \
-              --filters "Key=InstanceIds,Values=${instance_id}" \
-              --query 'InstanceInformationList[0].PingStatus' \
-              --output text 2>/dev/null || true)
-            if [[ "$ssm_status" == "Online" ]]; then
-              break
-            fi
-            sleep 5
-          done
-          if [[ "$ssm_status" != "Online" ]]; then
-            echo "::error::EC2 instance ${instance_id} did not register as an online SSM managed instance."
-            exit 1
-          fi
-
-          image="${ECR_REGISTRY}/${ECR_REPOSITORY}:${IMAGE_TAG}"
-          deploy_script="set -eu
-          aws ecr get-login-password --region '${AWS_REGION}' | docker login --username AWS --password-stdin '${ECR_REGISTRY}'
-          docker pull '${image}'
-          docker rm --force kws-app >/dev/null 2>&1 || true
-          docker run --detach --name kws-app --restart unless-stopped --publish 80:5000 '${image}'
-          for attempt in \$(seq 1 30); do
-            if curl --fail --silent http://127.0.0.1/health; then exit 0; fi
-            sleep 2
-          done
-          docker logs kws-app
-          exit 1"
-          parameters=$(jq -n --arg command "$deploy_script" '{commands: [$command]}')
-          command_id=$(aws ssm send-command \
-            --instance-ids "$instance_id" \
-            --document-name AWS-RunShellScript \
-            --parameters "$parameters" \
-            --timeout-seconds 600 \
-            --query 'Command.CommandId' \
+          image_uri="${{ steps.login-ecr.outputs.registry }}/${{ env.ECR_REPOSITORY }}:${{ env.IMAGE_TAG }}"
+          aws cloudformation deploy \
+            --template-file infra/lambda-stack.yml \
+            --stack-name "$STACK_NAME" \
+            --capabilities CAPABILITY_IAM \
+            --no-fail-on-empty-changeset \
+            --parameter-overrides ImageUri="$image_uri"
+          app_url=$(aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --query "Stacks[0].Outputs[?OutputKey=='FunctionUrl'].OutputValue | [0]" \
             --output text)
-
-          for attempt in $(seq 1 120); do
-            invocation=$(aws ssm get-command-invocation \
-              --command-id "$command_id" \
-              --instance-id "$instance_id" \
-              --output json 2>/dev/null || true)
-            status=$(jq -r '.Status // empty' <<<"$invocation")
-            if [[ "$status" == "Success" ]]; then
-              jq -r '.StandardOutputContent' <<<"$invocation"
-              break
-            fi
-            if [[ "$status" == "Failed" || "$status" == "TimedOut" || "$status" == "Cancelled" ]]; then
-              jq -r '.StandardErrorContent, .StandardOutputContent' <<<"$invocation"
-              echo "::error::SSM deployment command ended with ${status}."
-              exit 1
-            fi
-            sleep 5
-          done
-          if [[ "$status" != "Success" ]]; then
-            echo "::error::Timed out waiting for SSM deployment command ${command_id}."
-            exit 1
-          fi
-
-      - name: Verify public health endpoint
-        id: deployment-url
-        run: |
-          set -euo pipefail
-          ec2_ip=$(aws ec2 describe-instances \
-            --filters \
-              "Name=tag:Name,Values=${EC2_NAME}" \
-              "Name=tag:Project,Values=keyword-spotter" \
-              "Name=instance-state-name,Values=running" \
-            --query 'Reservations[].Instances[].PublicIpAddress' \
-            --output text)
-          if [[ -z "$ec2_ip" || "$ec2_ip" == "None" ]]; then
-            echo "::error::The tagged EC2 instance has no public IPv4 address."
+          if [[ -z "$app_url" || "$app_url" == "None" ]]; then
+            echo "::error::CloudFormation did not return a Lambda Function URL."
             exit 1
           fi
           for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error "http://${ec2_ip}/health"; then
+            if curl --fail --silent --show-error "${app_url}health"; then
               echo
-              echo "Live application: http://${ec2_ip}/"
-              echo "Health endpoint: http://${ec2_ip}/health"
-              echo "public_ip=${ec2_ip}" >> "$GITHUB_OUTPUT"
+              echo "Live application: ${app_url}"
               exit 0
             fi
-            sleep 2
+            sleep 5
           done
-          echo "::error::Deployed application's public /health endpoint did not return HTTP 2xx."
+          echo "::error::The Lambda application's /health endpoint did not return HTTP 2xx."
           exit 1
-
-      - name: Verify live keyword inference
-        env:
-          EC2_PUBLIC_IP: ${{ steps.deployment-url.outputs.public_ip }}
-        run: |
-          set -euo pipefail
-          curl --fail --silent --show-error \
-            --form "file=@dataset/test/audio2.wav;type=audio/wav" \
-            "http://${EC2_PUBLIC_IP}/transcribe" \
-            --output inference.html
-          grep -q "Transcribed keyword:" inference.html
-          grep -q "Predicted probability:" inference.html
-          sed -n 's/.*Transcribed keyword: \([^<]*\).*/Predicted keyword: \1/p' inference.html
-          sed -n 's/.*Predicted probability: \([^<]*\).*/Confidence: \1/p' inference.html

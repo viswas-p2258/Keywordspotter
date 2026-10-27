@@ -226,20 +226,23 @@ The main idea of using Docker in this project is to package the Flask applicatio
 
 `./.github/workflows` defines the workflows triggered by repository events:
   - `tests.yml` installs dependencies, runs pytest, builds the Docker image, and checks its health endpoint.
-  - `deploy.yml` runs tests, pushes the image to Amazon ECR, deploys it to an existing EC2 instance, and checks the public health endpoint after pushes to `main`.
+  - `deploy.yml` runs tests, pushes the container image to Amazon ECR, deploys the Lambda function and its private upload bucket through CloudFormation, and checks the public health endpoint after pushes to `main`.
 
 ### AWS deployment
 
-The deployment workflow targets `ap-south-1` and expects an existing Ubuntu EC2 instance with Docker installed, an instance profile that can pull from ECR, and inbound HTTP access on port 80. The workflow creates the `keyword-spotting-app` ECR repository if it does not already exist; the GitHub OIDC role must have permission to create and push to that repository.
+The deployment workflow targets `ap-south-1`. It uses GitHub Actions OIDC to assume the configured AWS deployment role, pushes a Lambda-compatible container image to the `keyword-spotting-app` ECR repository, and deploys `infra/lambda-stack.yml` as the `keyword-spotting-app` CloudFormation stack. The stack creates the Lambda function, a public Function URL, an encrypted private S3 bucket for temporary audio uploads and transcripts, and the scoped IAM roles needed by Lambda and Amazon Transcribe. Uploads are deleted after processing, with a one-day S3 lifecycle rule as a fallback.
 
-Configure these GitHub repository secrets before enabling deployment:
+On Lambda, the browser sends WAV files directly to private S3 and the app starts an asynchronous Amazon Transcribe job. The page polls for completion and displays the returned transcript. The default language is US English (`en-US`); change `TRANSCRIBE_LANGUAGE_CODE` in the CloudFormation template to a supported language code such as `en-IN` if appropriate. Locally, when the AWS bucket and Transcribe role are not configured, the app continues to use Faster-Whisper.
 
-- `AWS_ROLE_TO_ASSUME`: IAM role ARN trusted for this repository through GitHub OIDC.
-- `EC2_HOST`: EC2 public DNS name or IP address.
-- `EC2_SSH_PRIVATE_KEY`: private SSH key for the deployment user.
-- `EC2_SSH_KNOWN_HOSTS`: verified SSH host-key entry for the EC2 host.
+Before deploying, configure the `KWS-GitHub-Deploy` IAM role in AWS:
 
-The optional repository variable `EC2_USER` defaults to `ubuntu`. The workflow does not provision an EC2 instance or change its security group.
+- Its trust policy must allow GitHub's OIDC provider (`token.actions.githubusercontent.com`) to assume the role for this repository and its `main` branch.
+- Its permissions must allow ECR repository creation and image push; CloudFormation change-set and stack create/update/describe operations; Lambda function, Function URL, and permission management; S3 bucket setup; and IAM role creation, policy attachment, and `iam:PassRole` for the Lambda execution role created by the stack. Scope these permissions to this repository's stack, ECR repository, and `ap-south-1` where possible.
+- The role ARN is currently set in `.github/workflows/deploy.yml`; change `AWS_ROLE_TO_ASSUME` if your AWS account uses a different role.
+
+Push to `main` or run the workflow manually from GitHub Actions. A successful deployment prints the public app URL. The Function URL is unauthenticated and can be invoked by anyone; monitor Lambda/S3 usage and AWS costs. Lambda concurrency is capped at five executions. Audio is limited to 64 MB and uploaded directly to S3 using a short-lived presigned URL to avoid Lambda's request-size limit. The Lambda function has a 15-minute timeout, and the initial speech-model download may make its first transcription slower.
+
+This workflow no longer updates EC2. It does not stop or delete any EC2 instance previously used for deployment; decommission existing instances separately if they are no longer needed.
 
 ## Run locally
 
@@ -307,7 +310,7 @@ Run the Flask application:
 
 The Flask application listens on port 5000 by default. If that port is already in use, set `PORT` to another port (for example, `5001`) before starting the app. Check `http://127.0.0.1:<port>/health`. Use audio files from this [test directory](./dataset/test/) for inference or download the full test set from [here](https://www.kaggle.com/competitions/tensorflow-speech-recognition-challenge/data).
 
-The web app uses Faster-Whisper to transcribe spoken English from WAV files and displays the full transcript below the upload button. The first transcription downloads the `base.en` model; subsequent transcriptions use the local cached model, and uploaded audio is processed on your computer. A network connection is needed only for the initial model download. Uploads are limited to 64 MB.
+The web app transcribes English speech from WAV files and displays the full transcript below the upload button. Locally, Faster-Whisper processes audio on your computer and downloads the `base.en` model on first use. On Lambda, Amazon Transcribe processes the upload; audio is held in private S3 and deleted after the job completes, while transcripts are removed by a one-day lifecycle rule. Uploads are limited to 64 MB.
 
 The TensorFlow keyword-classification model remains available for the training and command-line inference workflow; it is separate from the web app's speech-to-text transcription.
 

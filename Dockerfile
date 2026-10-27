@@ -1,10 +1,17 @@
+FROM public.ecr.aws/awslambda-web-adapter:0.9.1 AS lambda-adapter
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
-    PORT=5000
+    PORT=5000 \
+    HF_HOME=/tmp/huggingface \
+    AWS_LWA_PORT=5000 \
+    AWS_LWA_READINESS_CHECK_PATH=/health
 
 WORKDIR /app
+
+COPY --from=lambda-adapter /lambda-adapter /opt/extensions/lambda-adapter
 
 RUN apt-get update \
     && apt-get install --no-install-recommends -y libsndfile1 \
