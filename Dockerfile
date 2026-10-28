@@ -7,6 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PORT=5000 \
     HF_HOME=/tmp/huggingface \
     AWS_LWA_PORT=5000 \
+    AWS_LWA_ASYNC_INIT=true \
     AWS_LWA_READINESS_CHECK_PATH=/health
 
 WORKDIR /app
