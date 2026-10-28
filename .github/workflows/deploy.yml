@@ -63,8 +63,21 @@ jobs:
             fi
           fi
 
+      - name: Determine AWS credential method
+        id: auth-mode
+        env:
+          KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID || secrets.AWS_ACCESS_KEY }}
+        run: |
+          if [ -n "${KEY_ID:-}" ]; then
+            echo "use_keys=true" >> "$GITHUB_OUTPUT"
+            echo "Configuring AWS deployment using Access Keys."
+          else
+            echo "use_keys=false" >> "$GITHUB_OUTPUT"
+            echo "Configuring AWS deployment using GitHub OIDC."
+          fi
+
       - name: Configure AWS credentials using Access Keys
-        if: ${{ secrets.AWS_ACCESS_KEY_ID != '' || secrets.AWS_ACCESS_KEY != '' }}
+        if: steps.auth-mode.outputs.use_keys == 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
@@ -72,7 +85,7 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY || secrets.AWS_SECRET_KEY }}
 
       - name: Configure AWS credentials using GitHub OIDC
-        if: ${{ secrets.AWS_ACCESS_KEY_ID == '' && secrets.AWS_ACCESS_KEY == '' }}
+        if: steps.auth-mode.outputs.use_keys != 'true'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           aws-region: ${{ env.AWS_REGION }}
