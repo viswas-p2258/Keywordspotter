@@ -20,6 +20,9 @@ jobs:
   build-test-and-deploy:
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    permissions:
+      contents: read
+      id-token: write
 
     steps:
       - name: Checkout repository
@@ -38,6 +41,27 @@ jobs:
 
       - name: Run tests
         run: pytest -q
+
+      - name: Debug GitHub OIDC Token claims
+        run: |
+          echo "GITHUB_REPOSITORY: ${GITHUB_REPOSITORY}"
+          echo "GITHUB_REF: ${GITHUB_REF}"
+          if [ -z "${ACTIONS_ID_TOKEN_REQUEST_URL:-}" ]; then
+            echo "WARNING: ACTIONS_ID_TOKEN_REQUEST_URL is not set."
+          else
+            echo "ACTIONS_ID_TOKEN_REQUEST_URL is available."
+            RAW_RESP=$(curl -s -H "Authorization: bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=sts.amazonaws.com")
+            RAW_JWT=$(echo "$RAW_RESP" | jq -r '.value // empty')
+            if [ -n "$RAW_JWT" ]; then
+              PAYLOAD=$(echo "$RAW_JWT" | cut -d. -f2)
+              pad=$(( (4 - ${#PAYLOAD} % 4) % 4 ))
+              for i in $(seq 1 $pad); do PAYLOAD="${PAYLOAD}="; done
+              echo "Decoded OIDC Claims:"
+              echo "$PAYLOAD" | base64 -d 2>/dev/null | jq '{iss, aud, sub, repository, repository_owner, ref}' || true
+            else
+              echo "Raw token response: $RAW_RESP"
+            fi
+          fi
 
       - name: Configure AWS credentials using GitHub OIDC
         uses: aws-actions/configure-aws-credentials@v4
