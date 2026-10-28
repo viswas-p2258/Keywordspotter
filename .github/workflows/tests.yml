@@ -10,6 +10,9 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
     timeout-minutes: 30
 
     steps:
@@ -28,6 +31,17 @@ jobs:
 
       - name: Run pytest
         run: pytest -q
+
+      - name: Configure AWS credentials using GitHub OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: ap-south-1
+          role-to-assume: arn:aws:iam::696073197777:role/KWS-GitHub-Deploy
+          audience: sts.amazonaws.com
+
+      - name: Login to Amazon ECR Public
+        run: |
+          aws ecr-public get-login-password --region us-east-1 | docker login --username AWS --password-stdin public.ecr.aws
 
       - name: Build Docker image
         run: docker build --tag kws-spotter:test .
