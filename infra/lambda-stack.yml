@@ -127,11 +127,10 @@ Resources:
       Role: !GetAtt LambdaExecutionRole.Arn
       Architectures:
         - x86_64
-      MemorySize: 4096
+      MemorySize: 2048
       Timeout: 900
       EphemeralStorage:
         Size: 2048
-      ReservedConcurrentExecutions: 5
       Environment:
         Variables:
           UPLOAD_BUCKET: !Ref UploadBucket
