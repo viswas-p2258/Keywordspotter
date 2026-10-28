@@ -22,8 +22,7 @@ import uuid
 import boto3
 from botocore.exceptions import ClientError
 from flask import Flask, render_template, request, flash
-class TranscriptionError(Exception):
-    pass
+from src.transcription import TranscriptionError, transcribe_audio
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 app.config["SECRET_KEY"] = os.environ.get("FLASK_SECRET_KEY") or os.urandom(32)
@@ -219,7 +218,6 @@ def _transcribe_s3_upload(object_key: str):
         if object_size > app.config["MAX_UPLOAD_BYTES"]:
             return {"error": "Audio file exceeds the maximum upload size."}, 413
         s3.download_file(_upload_bucket(), object_key, temporary_path)
-        from src.transcription import transcribe_audio, TranscriptionError
         transcription = transcribe_audio(temporary_path)
         return {"transcription": transcription or "No speech was detected in this audio."}, 200
     except ClientError as exc:
@@ -277,7 +275,6 @@ def transcribe():
             temporary_path = temporary_file.name
             audio_file.save(temporary_file)
 
-        from src.transcription import transcribe_audio, TranscriptionError
         transcription = transcribe_audio(temporary_path)
         if not transcription:
             transcription = "No speech was detected in this audio."
