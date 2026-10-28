@@ -121,10 +121,12 @@ jobs:
             echo "::error::CloudFormation did not return a Lambda Function URL."
             exit 1
           fi
-          for attempt in $(seq 1 30); do
-            if curl --fail --silent --show-error "${app_url}health"; then
+          health_url="${app_url%/}/health"
+          echo "Checking application health at: ${health_url}"
+          for attempt in $(seq 1 45); do
+            if curl --fail --silent --show-error -L "$health_url"; then
               echo
-              echo "Live application: ${app_url}"
+              echo "Deployment verified successfully! Live application: ${app_url}"
               exit 0
             fi
             sleep 5
