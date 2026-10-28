@@ -44,6 +44,7 @@ jobs:
         with:
           aws-region: ${{ env.AWS_REGION }}
           role-to-assume: ${{ env.AWS_ROLE_TO_ASSUME }}
+          audience: sts.amazonaws.com
 
       - name: Verify assumed AWS identity
         run: |
