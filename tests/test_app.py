@@ -202,7 +202,8 @@ def test_s3_transcribe_starts_amazon_transcribe_job(client, monkeypatch):
     )
     assert started["OutputBucketName"] == "test-audio"
     assert started["OutputKey"] == f"transcripts/{job_id}.json"
-    assert started["DataAccessRoleArn"].endswith(":role/Transcribe")
+    assert started["JobExecutionSettings"]["AllowDeferredExecution"] is True
+    assert started["JobExecutionSettings"]["DataAccessRoleArn"].endswith(":role/Transcribe")
 
 
 def test_amazon_transcribe_status_returns_result_and_removes_audio(client, monkeypatch):
@@ -285,3 +286,32 @@ def test_amazon_transcribe_status_rejects_invalid_job_id(client):
 
     assert response.status_code == 400
     assert response.get_json() == {"error": "The transcription job reference is invalid."}
+
+
+def test_s3_transcribe_handles_botocore_error(client, monkeypatch):
+    from botocore.exceptions import ParamValidationError
+
+    app.config.update(
+        UPLOAD_BUCKET="test-audio",
+        TRANSCRIBE_DATA_ACCESS_ROLE_ARN="arn:aws:iam::123456789012:role/Transcribe",
+    )
+
+    class FailingTranscribe:
+        def start_transcription_job(self, **kwargs):
+            raise ParamValidationError(report="Invalid parameter")
+
+    class FakeS3:
+        def delete_object(self, *, Bucket, Key):
+            pass
+
+    monkeypatch.setattr(
+        "app.boto3.client",
+        lambda service: FailingTranscribe() if service == "transcribe" else FakeS3(),
+    )
+    response = client.post(
+        "/transcribe",
+        json={"object_key": "uploads/0123456789abcdef0123456789abcdef.wav"},
+    )
+
+    assert response.status_code == 503
+    assert response.get_json() == {"error": "Amazon Transcribe could not start this audio job."}

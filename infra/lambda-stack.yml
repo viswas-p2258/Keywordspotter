@@ -115,6 +115,10 @@ Resources:
                 Resource: !Sub "${UploadBucket.Arn}/uploads/*"
               - Effect: Allow
                 Action:
+                  - s3:ListBucket
+                Resource: !Sub "${UploadBucket.Arn}"
+              - Effect: Allow
+                Action:
                   - s3:PutObject
                 Resource: !Sub "${UploadBucket.Arn}/transcripts/*"
 

@@ -20,7 +20,7 @@ import tempfile
 import uuid
 
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import BotoCoreError, ClientError
 from flask import Flask, render_template, request, flash
 from src.transcription import TranscriptionError, transcribe_audio
 
@@ -88,7 +88,7 @@ def presign_upload():
             ],
             ExpiresIn=300,
         )
-    except (ClientError, RuntimeError) as exc:
+    except (ClientError, BotoCoreError, RuntimeError) as exc:
         app.logger.error("Could not create a presigned audio upload URL: %s", exc)
         return {"error": "Audio uploads are temporarily unavailable."}, 503
 
@@ -102,8 +102,24 @@ def presign_upload():
 def _delete_s3_upload(object_key: str) -> None:
     try:
         boto3.client("s3").delete_object(Bucket=_upload_bucket(), Key=object_key)
-    except (ClientError, RuntimeError) as exc:
+    except (ClientError, BotoCoreError, RuntimeError) as exc:
         app.logger.warning("Could not remove temporary S3 audio upload: %s", exc)
+
+
+@app.errorhandler(500)
+def internal_server_error(error):
+    app.logger.error("Internal server error: %s", error)
+    if request.is_json or request.path.startswith(("/uploads", "/transcribe")):
+        return {"error": "An internal server error occurred. Please try again."}, 500
+    flash("An internal server error occurred. Please try again.", category="error")
+    return render_template(
+        "page.html",
+        s3_uploads_enabled=bool(app.config.get("UPLOAD_BUCKET")),
+        amazon_transcribe_enabled=bool(
+            app.config.get("UPLOAD_BUCKET") and app.config.get("TRANSCRIBE_DATA_ACCESS_ROLE_ARN")
+        ),
+        max_upload_bytes=app.config["MAX_UPLOAD_BYTES"],
+    ), 500
 
 
 @app.errorhandler(413)
@@ -139,9 +155,12 @@ def _start_amazon_transcribe_job(object_key: str):
             Media={"MediaFileUri": f"s3://{_upload_bucket()}/{object_key}"},
             OutputBucketName=_upload_bucket(),
             OutputKey=f"transcripts/{job_name}.json",
-            DataAccessRoleArn=role_arn,
+            JobExecutionSettings={
+                "AllowDeferredExecution": True,
+                "DataAccessRoleArn": role_arn,
+            },
         )
-    except (ClientError, RuntimeError) as exc:
+    except (ClientError, BotoCoreError, RuntimeError) as exc:
         app.logger.error("Could not start Amazon Transcribe job: %s", exc)
         _delete_s3_upload(object_key)
         return {"error": "Amazon Transcribe could not start this audio job."}, 503
@@ -163,6 +182,9 @@ def transcribe_status(job_id: str):
         code = exc.response.get("Error", {}).get("Code")
         if code == "NotFoundException":
             return {"error": "The transcription job was not found."}, 404
+        app.logger.error("Could not retrieve Amazon Transcribe job status: %s", exc)
+        return {"error": "Amazon Transcribe status is temporarily unavailable."}, 503
+    except (BotoCoreError, RuntimeError) as exc:
         app.logger.error("Could not retrieve Amazon Transcribe job status: %s", exc)
         return {"error": "Amazon Transcribe status is temporarily unavailable."}, 503
 
@@ -194,7 +216,7 @@ def transcribe_status(job_id: str):
         )
         transcript_data = json.loads(transcript_object["Body"].read())
         transcript = transcript_data["results"]["transcripts"][0]["transcript"]
-    except (ClientError, KeyError, IndexError, TypeError, ValueError) as exc:
+    except (ClientError, BotoCoreError, KeyError, IndexError, TypeError, ValueError) as exc:
         app.logger.error("Could not read Amazon Transcribe result for job %s: %s", job_id, exc)
         return {"error": "The transcription result is temporarily unavailable."}, 503
     finally:
@@ -220,7 +242,7 @@ def _transcribe_s3_upload(object_key: str):
         s3.download_file(_upload_bucket(), object_key, temporary_path)
         transcription = transcribe_audio(temporary_path)
         return {"transcription": transcription or "No speech was detected in this audio."}, 200
-    except ClientError as exc:
+    except (ClientError, BotoCoreError) as exc:
         app.logger.error("Could not retrieve uploaded audio from S3: %s", exc)
         return {"error": "Could not retrieve the uploaded audio. Please upload it again."}, 400
     except (RuntimeError, TranscriptionError) as exc:
@@ -229,7 +251,7 @@ def _transcribe_s3_upload(object_key: str):
     finally:
         try:
             boto3.client("s3").delete_object(Bucket=_upload_bucket(), Key=object_key)
-        except (ClientError, RuntimeError) as exc:
+        except (ClientError, BotoCoreError, RuntimeError) as exc:
             app.logger.warning("Could not remove temporary S3 audio upload: %s", exc)
         if temporary_path and os.path.exists(temporary_path):
             os.remove(temporary_path)

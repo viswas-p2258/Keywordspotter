@@ -47,6 +47,23 @@
         </div>
     </div>
     <script>
+        async function parseJsonResponse(res, fallbackMessage) {
+            let data = null;
+            try {
+                data = await res.json();
+            } catch (_) {
+                // Not JSON (e.g. HTML error page)
+            }
+            if (!res.ok) {
+                const message = (data && data.error) ? data.error : `${fallbackMessage} (${res.status})`;
+                throw new Error(message);
+            }
+            if (!data) {
+                throw new Error("Invalid response format received from server.");
+            }
+            return data;
+        }
+
         const form = document.getElementById("transcribeForm");
         if (form.dataset.s3Upload === "true") {
             form.addEventListener("submit", async (event) => {
@@ -71,8 +88,7 @@
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ filename: file.name, size: file.size })
                     });
-                    const upload = await presignResponse.json();
-                    if (!presignResponse.ok) throw new Error(upload.error || "Could not prepare the upload.");
+                    const upload = await parseJsonResponse(presignResponse, "Could not prepare the upload.");
 
                     const uploadForm = new FormData();
                     Object.entries(upload.upload_fields).forEach(([name, value]) => {
@@ -91,8 +107,7 @@
                         headers: { "Content-Type": "application/json" },
                         body: JSON.stringify({ object_key: upload.object_key })
                     });
-                    let response = await transcriptionResponse.json();
-                    if (!transcriptionResponse.ok) throw new Error(response.error || "Transcription failed.");
+                    let response = await parseJsonResponse(transcriptionResponse, "Transcription failed.");
                     if (transcriptionResponse.status === 202) {
                         const jobId = response.job_id;
                         if (!jobId || form.dataset.amazonTranscribe !== "true") {
@@ -104,9 +119,8 @@
                             const statusResponse = await fetch(
                                 `{{ url_for('transcribe_status', job_id='JOB_ID') }}`.replace("JOB_ID", encodeURIComponent(jobId))
                             );
-                            response = await statusResponse.json();
+                            response = await parseJsonResponse(statusResponse, "Transcription status check failed.");
                             if (statusResponse.status === 202) continue;
-                            if (!statusResponse.ok) throw new Error(response.error || "Transcription failed.");
                             break;
                         }
                         if (response.status !== "COMPLETED") {
